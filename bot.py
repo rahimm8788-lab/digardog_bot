@@ -1,4 +1,5 @@
 import asyncio
+import random
 from uuid import uuid4
 
 from aiogram import Bot, Dispatcher, F, types
@@ -22,7 +23,7 @@ ALIF_PHONE = "175279955"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-pending_checks: dict[str, dict[str, int]] = {}
+pending_checks: dict[str, dict[str, str | int]] = {}
 
 
 class OrderState(StatesGroup):
@@ -32,7 +33,7 @@ class OrderState(StatesGroup):
     phone = State()
     payment = State()
     paid_confirmation = State()
-    WAITING_CHECK = State()
+    waiting_check = State()
 
 
 CATEGORIES = {
@@ -80,7 +81,7 @@ PRODUCTS = {
 
 PAYMENTS = {
     "cash": "Наличные",
-    "dc": "Душанбе Сити",
+    "dc": "Dushanbe City",
     "alif": "Alif",
 }
 
@@ -100,31 +101,39 @@ PAYMENT_ALIASES = {
 }
 
 
-def new_order_id() -> str:
+def new_session_id() -> str:
     return uuid4().hex[:8]
+
+
+def new_order_code() -> str:
+    return f"{random.randint(1000, 9999)}L"
 
 
 async def start_new_order(state: FSMContext) -> str:
     await state.clear()
-    order_id = new_order_id()
-    await state.update_data(order_id=order_id, cart={})
+    session_id = new_session_id()
+    await state.update_data(session_id=session_id, order_code=new_order_code(), cart={})
     await state.set_state(OrderState.choosing)
-    return order_id
+    return session_id
 
 
-async def get_order_id(state: FSMContext) -> str | None:
+async def current_session_id(state: FSMContext) -> str | None:
     data = await state.get_data()
-    return data.get("order_id")
+    return data.get("session_id")
 
 
-async def is_current_order(state: FSMContext, order_id: str) -> bool:
-    return await get_order_id(state) == order_id
+async def is_current_session(state: FSMContext, session_id: str) -> bool:
+    return await current_session_id(state) == session_id
 
 
 async def get_cart(state: FSMContext) -> dict[str, int]:
     data = await state.get_data()
     cart = data.get("cart", {})
-    return {product_id: int(quantity) for product_id, quantity in cart.items()}
+    return {
+        product_id: int(quantity)
+        for product_id, quantity in cart.items()
+        if product_id in PRODUCTS and int(quantity) > 0
+    }
 
 
 async def save_cart(state: FSMContext, cart: dict[str, int]) -> None:
@@ -156,27 +165,28 @@ def order_summary(data: dict) -> str:
     cart = {
         product_id: int(quantity)
         for product_id, quantity in data.get("cart", {}).items()
-        if product_id in PRODUCTS
+        if product_id in PRODUCTS and int(quantity) > 0
     }
     return (
+        f"🆔 Номер заказа: {data.get('order_code', '-')}\n\n"
         f"{cart_text(cart)}\n\n"
         f"📍 Адрес: {data.get('address', '-')}\n"
-        f"🏢 Подъезд: {data.get('entrance', '-')}\n"
+        f"🏢 Подъезд/квартира: {data.get('entrance', '-')}\n"
         f"📞 Телефон: {data.get('phone', '-')}\n"
         f"💳 Оплата: {data.get('payment', '-')}"
     )
 
 
-def main_menu_keyboard(order_id: str) -> InlineKeyboardMarkup:
+def main_menu_keyboard(session_id: str) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=name, callback_data=f"cat:{order_id}:{category_id}")]
+        [InlineKeyboardButton(text=name, callback_data=f"cat:{session_id}:{category_id}")]
         for category_id, name in CATEGORIES.items()
     ]
-    rows.append([InlineKeyboardButton(text="🛒 Оформить заказ", callback_data=f"checkout:{order_id}")])
+    rows.append([InlineKeyboardButton(text="🛒 Оформить заказ", callback_data=f"checkout:{session_id}:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def category_keyboard(order_id: str, category_id: str, cart: dict[str, int]) -> InlineKeyboardMarkup:
+def category_keyboard(session_id: str, category_id: str, cart: dict[str, int]) -> InlineKeyboardMarkup:
     rows = []
     for product_id, product in PRODUCTS.items():
         if product["category"] != category_id:
@@ -185,36 +195,36 @@ def category_keyboard(order_id: str, category_id: str, cart: dict[str, int]) -> 
             [
                 InlineKeyboardButton(
                     text=f"{product['name']} — {product['price']} сомони",
-                    callback_data=f"noop:{order_id}",
+                    callback_data=f"noop:{session_id}:title:{product_id}",
                 )
             ]
         )
         rows.append(
             [
-                InlineKeyboardButton(text="➖", callback_data=f"cart:{order_id}:minus:{product_id}"),
-                InlineKeyboardButton(text=str(cart.get(product_id, 0)), callback_data=f"noop:{order_id}"),
-                InlineKeyboardButton(text="➕", callback_data=f"cart:{order_id}:plus:{product_id}"),
+                InlineKeyboardButton(text="➖", callback_data=f"cart:{session_id}:minus:{product_id}"),
+                InlineKeyboardButton(text=str(cart.get(product_id, 0)), callback_data=f"noop:{session_id}:qty:{product_id}"),
+                InlineKeyboardButton(text="➕", callback_data=f"cart:{session_id}:plus:{product_id}"),
             ]
         )
-    rows.append([InlineKeyboardButton(text="⬅️ Категории", callback_data=f"menu:{order_id}")])
-    rows.append([InlineKeyboardButton(text="🛒 Оформить заказ", callback_data=f"checkout:{order_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Категории", callback_data=f"menu:{session_id}:{category_id}")])
+    rows.append([InlineKeyboardButton(text="🛒 Оформить заказ", callback_data=f"checkout:{session_id}:{category_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def payment_keyboard(order_id: str) -> InlineKeyboardMarkup:
+def payment_keyboard(session_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Наличные", callback_data=f"pay:{order_id}:cash")],
-            [InlineKeyboardButton(text="Душанбе Сити", callback_data=f"pay:{order_id}:dc")],
-            [InlineKeyboardButton(text="Alif", callback_data=f"pay:{order_id}:alif")],
+            [InlineKeyboardButton(text="Наличные", callback_data=f"pay:{session_id}:cash")],
+            [InlineKeyboardButton(text="Dushanbe City", callback_data=f"pay:{session_id}:dc")],
+            [InlineKeyboardButton(text="Alif", callback_data=f"pay:{session_id}:alif")],
         ]
     )
 
 
-def paid_keyboard(order_id: str) -> InlineKeyboardMarkup:
+def paid_keyboard(session_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Оплатил", callback_data=f"paid:{order_id}")],
+            [InlineKeyboardButton(text="✅ Оплатил", callback_data=f"paid:{session_id}")],
         ]
     )
 
@@ -228,18 +238,18 @@ def admin_check_keyboard(check_id: str) -> InlineKeyboardMarkup:
     )
 
 
-def category_text(category_id: str, cart: dict[str, int]) -> str:
+def category_text(category_id: str) -> str:
     return (
         f"{CATEGORIES[category_id]}\n\n"
-        "Нажмите ➕, чтобы добавить товар в корзину.\n"
+        "Нажмите ➕, чтобы добавить товар.\n"
         "Нажмите ➖, чтобы уменьшить количество."
     )
 
 
 async def send_main_menu(message: types.Message, state: FSMContext) -> None:
-    order_id = await get_order_id(state)
-    if not order_id:
-        order_id = await start_new_order(state)
+    session_id = await current_session_id(state)
+    if not session_id:
+        session_id = await start_new_order(state)
 
     await message.answer(
         "Здравствуйте дорогой клиент 👋\n"
@@ -247,7 +257,7 @@ async def send_main_menu(message: types.Message, state: FSMContext) -> None:
         "Что вы хотите заказать?",
         reply_markup=ReplyKeyboardRemove(),
     )
-    await message.answer("Выберите категорию:", reply_markup=main_menu_keyboard(order_id))
+    await message.answer("Выберите категорию:", reply_markup=main_menu_keyboard(session_id))
 
 
 async def send_order_to_admin(data: dict, user: types.User | None, title: str) -> None:
@@ -260,17 +270,17 @@ async def send_order_to_admin(data: dict, user: types.User | None, title: str) -
 
 
 async def ask_payment(message: types.Message, state: FSMContext) -> None:
-    order_id = await get_order_id(state)
-    if not order_id:
-        order_id = await start_new_order(state)
+    session_id = await current_session_id(state)
+    if not session_id:
+        session_id = await start_new_order(state)
 
     await state.set_state(OrderState.payment)
     await message.answer(
         "💳 Выберите способ оплаты:\n\n"
         "1. Наличные\n"
-        "2. Душанбе Сити\n"
+        "2. Dushanbe City\n"
         "3. Alif",
-        reply_markup=payment_keyboard(order_id),
+        reply_markup=payment_keyboard(session_id),
     )
 
 
@@ -283,16 +293,16 @@ async def accept_cash_order(message: types.Message, state: FSMContext, user: typ
 
 
 async def send_online_payment(message: types.Message, state: FSMContext, payment_id: str) -> None:
-    order_id = await get_order_id(state)
-    if not order_id:
-        return
+    session_id = await current_session_id(state)
+    if not session_id:
+        session_id = await start_new_order(state)
 
     await state.set_state(OrderState.paid_confirmation)
     if payment_id == "dc":
-        text = f"Оплатите на номер:\n{DUSHANBE_CITY_PHONE}"
+        text = f"Оплатите на номер: {DUSHANBE_CITY_PHONE}"
     else:
-        text = f"Оплатите на номер:\n{ALIF_PHONE}"
-    await message.answer(text, reply_markup=paid_keyboard(order_id))
+        text = f"Оплатите на номер: {ALIF_PHONE}"
+    await message.answer(text, reply_markup=paid_keyboard(session_id))
 
 
 @dp.message(Command("start"))
@@ -303,12 +313,11 @@ async def start(message: types.Message, state: FSMContext):
 
 @dp.callback_query(OrderState.choosing, F.data.startswith("menu:"))
 async def menu_callback(callback: types.CallbackQuery, state: FSMContext):
-    parts = callback.data.split(":", maxsplit=1)
-    if len(parts) != 2 or not await is_current_order(state, parts[1]):
+    parts = callback.data.split(":", maxsplit=2)
+    if len(parts) < 2 or not await is_current_session(state, parts[1]):
         await callback.answer()
         return
 
-    await state.set_state(OrderState.choosing)
     await callback.message.edit_text("Выберите категорию:", reply_markup=main_menu_keyboard(parts[1]))
     await callback.answer()
 
@@ -320,17 +329,16 @@ async def category_callback(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    _, order_id, category_id = parts
-    if not await is_current_order(state, order_id) or category_id not in CATEGORIES:
+    _, session_id, category_id = parts
+    if not await is_current_session(state, session_id) or category_id not in CATEGORIES:
         await callback.answer()
         return
 
     cart = await get_cart(state)
-    await state.set_state(OrderState.choosing)
     await state.update_data(current_category=category_id)
     await callback.message.edit_text(
-        category_text(category_id, cart),
-        reply_markup=category_keyboard(order_id, category_id, cart),
+        category_text(category_id),
+        reply_markup=category_keyboard(session_id, category_id, cart),
     )
     await callback.answer()
 
@@ -342,8 +350,8 @@ async def cart_callback(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    _, order_id, action, product_id = parts
-    if not await is_current_order(state, order_id) or product_id not in PRODUCTS:
+    _, session_id, action, product_id = parts
+    if not await is_current_session(state, session_id) or product_id not in PRODUCTS:
         await callback.answer()
         return
 
@@ -352,12 +360,13 @@ async def cart_callback(callback: types.CallbackQuery, state: FSMContext):
 
     if action == "plus":
         cart[product_id] = quantity + 1
-        await callback.message.answer("✅ Товар добавлен в корзину")
+        notice = f"{PRODUCTS[product_id]['name']} добавлен в корзину"
     elif action == "minus":
         if quantity > 1:
             cart[product_id] = quantity - 1
         else:
             cart.pop(product_id, None)
+        notice = f"{PRODUCTS[product_id]['name']} количество изменено"
     else:
         await callback.answer()
         return
@@ -365,16 +374,18 @@ async def cart_callback(callback: types.CallbackQuery, state: FSMContext):
     await save_cart(state, cart)
     category_id = PRODUCTS[product_id]["category"]
     await state.update_data(current_category=category_id)
+    if action == "plus":
+        await callback.message.answer(notice)
     await callback.message.edit_reply_markup(
-        reply_markup=category_keyboard(order_id, category_id, cart)
+        reply_markup=category_keyboard(session_id, category_id, cart),
     )
     await callback.answer()
 
 
 @dp.callback_query(OrderState.choosing, F.data.startswith("checkout:"))
 async def checkout_callback(callback: types.CallbackQuery, state: FSMContext):
-    parts = callback.data.split(":", maxsplit=1)
-    if len(parts) != 2 or not await is_current_order(state, parts[1]):
+    parts = callback.data.split(":", maxsplit=2)
+    if len(parts) < 2 or not await is_current_session(state, parts[1]):
         await callback.answer()
         return
 
@@ -393,7 +404,7 @@ async def checkout_callback(callback: types.CallbackQuery, state: FSMContext):
 async def address_message(message: types.Message, state: FSMContext):
     await state.update_data(address=message.text.strip())
     await state.set_state(OrderState.entrance)
-    await message.answer("🏢 Укажите подъезд")
+    await message.answer("🏢 Укажите подъезд/квартиру")
 
 
 @dp.message(OrderState.address)
@@ -410,7 +421,7 @@ async def entrance_message(message: types.Message, state: FSMContext):
 
 @dp.message(OrderState.entrance)
 async def wrong_entrance(message: types.Message):
-    await message.answer("🏢 Укажите подъезд текстом.")
+    await message.answer("🏢 Укажите подъезд/квартиру текстом.")
 
 
 @dp.message(OrderState.phone, F.text)
@@ -431,17 +442,16 @@ async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    _, order_id, payment_id = parts
-    if not await is_current_order(state, order_id) or payment_id not in PAYMENTS:
+    _, session_id, payment_id = parts
+    if not await is_current_session(state, session_id) or payment_id not in PAYMENTS:
         await callback.answer()
         return
 
     await state.update_data(payment=PAYMENTS[payment_id])
+    await callback.message.edit_reply_markup(reply_markup=None)
     if payment_id == "cash":
-        await callback.message.edit_reply_markup(reply_markup=None)
         await accept_cash_order(callback.message, state, callback.from_user)
     else:
-        await callback.message.edit_reply_markup(reply_markup=None)
         await send_online_payment(callback.message, state, payment_id)
     await callback.answer()
 
@@ -468,12 +478,12 @@ async def wrong_payment(message: types.Message, state: FSMContext):
 @dp.callback_query(OrderState.paid_confirmation, F.data.startswith("paid:"))
 async def paid_callback(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split(":", maxsplit=1)
-    if len(parts) != 2 or not await is_current_order(state, parts[1]):
+    if len(parts) != 2 or not await is_current_session(state, parts[1]):
         await callback.answer()
         return
 
-    await state.set_state(OrderState.WAITING_CHECK)
-    await callback.message.edit_text("📸 Отправьте чек")
+    await state.set_state(OrderState.waiting_check)
+    await callback.message.edit_text("📸 Отправьте чек оплаты")
     await callback.answer()
 
 
@@ -482,7 +492,7 @@ async def wrong_paid_confirmation(message: types.Message):
     await message.answer("Нажмите кнопку ✅ Оплатил после оплаты.")
 
 
-@dp.message(OrderState.WAITING_CHECK, F.photo)
+@dp.message(OrderState.waiting_check, F.photo)
 async def check_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     check_id = uuid4().hex[:12]
@@ -504,6 +514,7 @@ async def check_photo(message: types.Message, state: FSMContext):
     )
     pending_checks[check_id] = {
         "client_chat_id": message.chat.id,
+        "order_code": data.get("order_code", "-"),
         "file_id": file_id,
     }
 
@@ -511,7 +522,7 @@ async def check_photo(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-@dp.message(OrderState.WAITING_CHECK)
+@dp.message(OrderState.waiting_check)
 async def wrong_check(message: types.Message):
     await message.answer("📸 Отправьте чек фотографией.")
 
@@ -530,11 +541,15 @@ async def admin_check_callback(callback: types.CallbackQuery):
         return
 
     if action == "valid":
-        text = "✅ Заказ принят.\nКурьер скоро свяжется с вами."
+        text = (
+            "✅ Заказ принят.\n"
+            "🚚 Курьер скоро свяжется с вами.\n\n"
+            f"🆔 Номер заказа: {check['order_code']}"
+        )
     else:
-        text = "❌ Чек не прошёл проверку.\nЗаказ отменён."
+        text = "❌ Чек не действителен.\nЗаказ не принят."
 
-    await bot.send_message(chat_id=check["client_chat_id"], text=text)
+    await bot.send_message(chat_id=int(check["client_chat_id"]), text=text)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer()
 
@@ -550,7 +565,7 @@ async def old_callback(callback: types.CallbackQuery):
 
 
 @dp.message()
-async def any_message(message: types.Message, state: FSMContext):
+async def fallback_message(message: types.Message, state: FSMContext):
     await start_new_order(state)
     await send_main_menu(message, state)
 
