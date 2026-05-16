@@ -84,6 +84,21 @@ PAYMENTS = {
     "alif": "Alif",
 }
 
+PAYMENT_TEXT_ALIASES = {
+    "1": "cash",
+    "наличными": "cash",
+    "наличные": "cash",
+    "cash": "cash",
+    "2": "dc",
+    "душанбе сити": "dc",
+    "душанбе": "dc",
+    "dushanbe city": "dc",
+    "dc": "dc",
+    "3": "alif",
+    "алиф": "alif",
+    "alif": "alif",
+}
+
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     rows = [
@@ -217,6 +232,31 @@ async def send_order_to_admin(data: dict, user: types.User | None, title: str):
     await bot.send_message(chat_id=ADMIN_ID, text=text)
 
 
+async def finish_cash_order(message: types.Message, state: FSMContext, user: types.User | None):
+    data = await state.get_data()
+    await send_order_to_admin(data, user, "💵 Новый заказ с оплатой наличными")
+    await message.answer(
+        "Оплата наличными при получении заказа.\n\n"
+        "✅ Заказ принят.\n"
+        "🚚 Ожидайте заказ, курьер свяжется с вами."
+    )
+    await state.clear()
+
+
+async def send_online_payment_details(
+    message: types.Message,
+    state: FSMContext,
+    payment_id: str,
+):
+    await state.set_state(OrderState.paid_confirmation)
+    if payment_id == "dc":
+        text = f"💳 Оплатите на номер Душанбе Сити:\n{DUSHANBE_CITY_PHONE}"
+    else:
+        text = f"💳 Оплатите на номер Alif:\n{ALIF_PHONE}"
+
+    await message.answer(text, reply_markup=paid_keyboard())
+
+
 async def show_main_menu(message: types.Message, state: FSMContext):
     await state.set_state(OrderState.choosing)
     await message.answer(
@@ -238,7 +278,7 @@ async def start(message: types.Message, state: FSMContext):
     await show_main_menu(message, state)
 
 
-@dp.callback_query(F.data == "menu")
+@dp.callback_query(OrderState.choosing, F.data == "menu")
 async def menu_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.choosing)
     await callback.message.edit_text(
@@ -248,7 +288,7 @@ async def menu_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("cat:"))
+@dp.callback_query(OrderState.choosing, F.data.startswith("cat:"))
 async def category_callback(callback: types.CallbackQuery, state: FSMContext):
     category_id = callback.data.split(":", maxsplit=1)[1]
     if category_id not in CATEGORIES:
@@ -265,9 +305,14 @@ async def category_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("cart:"))
+@dp.callback_query(OrderState.choosing, F.data.startswith("cart:"))
 async def change_cart_callback(callback: types.CallbackQuery, state: FSMContext):
-    _, action, product_id = callback.data.split(":", maxsplit=2)
+    parts = callback.data.split(":", maxsplit=2)
+    if len(parts) != 3:
+        await callback.answer("Некорректная кнопка товара.", show_alert=True)
+        return
+
+    _, action, product_id = parts
     if product_id not in PRODUCTS:
         await callback.answer("Товар не найден.", show_alert=True)
         return
@@ -301,7 +346,7 @@ async def change_cart_callback(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer(answer_text)
 
 
-@dp.callback_query(F.data == "checkout")
+@dp.callback_query(OrderState.choosing, F.data == "checkout")
 async def checkout_callback(callback: types.CallbackQuery, state: FSMContext):
     cart = await ensure_cart(state)
     if not cart:
@@ -322,11 +367,21 @@ async def get_address(message: types.Message, state: FSMContext):
     await message.answer("🏢 Укажите подъезд")
 
 
+@dp.message(OrderState.address)
+async def wrong_address(message: types.Message):
+    await message.answer("📍 Введите адрес доставки текстом.")
+
+
 @dp.message(OrderState.entrance, F.text)
 async def get_entrance(message: types.Message, state: FSMContext):
     await state.update_data(entrance=message.text.strip())
     await state.set_state(OrderState.phone)
     await message.answer("📞 Введите номер телефона")
+
+
+@dp.message(OrderState.entrance)
+async def wrong_entrance(message: types.Message):
+    await message.answer("🏢 Укажите подъезд текстом.")
 
 
 @dp.message(OrderState.phone, F.text)
@@ -343,6 +398,11 @@ async def get_phone(message: types.Message, state: FSMContext):
     )
 
 
+@dp.message(OrderState.phone)
+async def wrong_phone(message: types.Message):
+    await message.answer("📞 Введите номер телефона текстом.")
+
+
 @dp.callback_query(OrderState.payment, F.data.startswith("pay:"))
 async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
     payment_id = callback.data.split(":", maxsplit=1)[1]
@@ -351,15 +411,15 @@ async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(payment=PAYMENTS[payment_id])
-    data = await state.get_data()
 
     if payment_id == "cash":
-        await send_order_to_admin(data, callback.from_user, "💵 Новый заказ с оплатой наличными")
         await callback.message.edit_text(
             "Оплата наличными при получении заказа.\n\n"
             "✅ Заказ принят.\n"
             "🚚 Ожидайте заказ, курьер свяжется с вами."
         )
+        data = await state.get_data()
+        await send_order_to_admin(data, callback.from_user, "💵 Новый заказ с оплатой наличными")
         await callback.answer()
         await state.clear()
         return
@@ -372,6 +432,41 @@ async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(text, reply_markup=paid_keyboard())
     await callback.answer()
+
+
+@dp.message(OrderState.payment, F.text)
+async def payment_text(message: types.Message, state: FSMContext):
+    payment_key = message.text.strip().casefold()
+    payment_id = PAYMENT_TEXT_ALIASES.get(payment_key)
+
+    if payment_id not in PAYMENTS:
+        await message.answer(
+            "💳 Выберите способ оплаты кнопкой или отправьте:\n"
+            "1. Наличными\n"
+            "2. Душанбе Сити\n"
+            "3. Alif",
+            reply_markup=payment_keyboard(),
+        )
+        return
+
+    await state.update_data(payment=PAYMENTS[payment_id])
+
+    if payment_id == "cash":
+        await finish_cash_order(message, state, message.from_user)
+        return
+
+    await send_online_payment_details(message, state, payment_id)
+
+
+@dp.message(OrderState.payment)
+async def wrong_payment(message: types.Message):
+    await message.answer(
+        "💳 Выберите способ оплаты кнопкой:\n\n"
+        "1. Наличными\n"
+        "2. Душанбе Сити\n"
+        "3. Alif",
+        reply_markup=payment_keyboard(),
+    )
 
 
 @dp.callback_query(OrderState.paid_confirmation, F.data == "paid")
@@ -420,7 +515,16 @@ async def admin_check_callback(callback: types.CallbackQuery):
         await callback.answer("Эти кнопки доступны только администратору.", show_alert=True)
         return
 
-    _, action, check_id = callback.data.split(":", maxsplit=2)
+    parts = callback.data.split(":", maxsplit=2)
+    if len(parts) != 3:
+        await callback.answer("Некорректная кнопка проверки.", show_alert=True)
+        return
+
+    _, action, check_id = parts
+    if action not in {"valid", "invalid"}:
+        await callback.answer("Некорректное действие проверки.", show_alert=True)
+        return
+
     check = pending_checks.pop(check_id, None)
     if not check:
         await callback.answer("Чек уже обработан.", show_alert=True)
