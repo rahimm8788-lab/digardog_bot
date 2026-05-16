@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
 TOKEN = "8859950664:AAFQkhUDQi0sgTYWLxgFHPKniX1PAMUhiUA"
 ADMIN_ID = 6936232244
@@ -202,6 +202,10 @@ async def show_main_menu(message: types.Message, state: FSMContext):
         "Здравствуйте дорогой клиент 👋\n"
         "Добро пожаловать в Digar-Dog 🌭\n"
         "Что вы хотите заказать?",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(
+        "Выберите категорию:",
         reply_markup=main_menu_keyboard(),
     )
 
