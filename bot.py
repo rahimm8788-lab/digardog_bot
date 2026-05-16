@@ -1,4 +1,5 @@
 import asyncio
+from uuid import uuid4
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, StateFilter
@@ -7,6 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 TOKEN = "8859950664:AAFQkhUDQi0sgTYWLxgFHPKniX1PAMUhiUA"
+ADMIN_ID = 6936232244
 BOT_DESCRIPTION = (
     "🍔 Digar Dog — быстрая доставка фастфуда\n\n"
     "📞 Связь с оператором:\n"
@@ -14,15 +16,23 @@ BOT_DESCRIPTION = (
     "+992922002122"
 )
 
+DUSHANBE_CITY_PHONE = "+992202288999"
+ALIF_PHONE = "175279955"
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+pending_checks = {}
 
 
 class OrderState(StatesGroup):
     choosing = State()
-    waiting_for_address = State()
-    waiting_for_phone = State()
-    waiting_for_payment = State()
+    address = State()
+    entrance = State()
+    phone = State()
+    payment = State()
+    paid_confirmation = State()
+    check_upload = State()
 
 
 CATEGORIES = {
@@ -69,8 +79,9 @@ PRODUCTS = {
 }
 
 PAYMENTS = {
-    "cash": "Наличными",
-    "card": "Картой",
+    "cash": "💵 Наличными",
+    "dc": "🏦 Душанбе Сити",
+    "alif": "🟣 Alif",
 }
 
 
@@ -114,8 +125,36 @@ def category_keyboard(category_id: str, cart: dict) -> InlineKeyboardMarkup:
 def payment_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Наличными", callback_data="pay:cash")],
-            [InlineKeyboardButton(text="Картой", callback_data="pay:card")],
+            [InlineKeyboardButton(text="💵 Наличными", callback_data="pay:cash")],
+            [InlineKeyboardButton(text="🏦 Душанбе Сити", callback_data="pay:dc")],
+            [InlineKeyboardButton(text="🟣 Alif", callback_data="pay:alif")],
+        ]
+    )
+
+
+def paid_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Оплатил", callback_data="paid")],
+        ]
+    )
+
+
+def admin_check_keyboard(check_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Чек действителен",
+                    callback_data=f"check:valid:{check_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Чек не действителен",
+                    callback_data=f"check:invalid:{check_id}",
+                )
+            ],
         ]
     )
 
@@ -140,9 +179,9 @@ def cart_text(cart: dict) -> str:
 
 def order_summary(data: dict) -> str:
     return (
-        "✅ Заказ оформлен.\n\n"
         f"{cart_text(data.get('cart', {}))}\n\n"
         f"📍 Адрес: {data.get('address')}\n"
+        f"🏢 Подъезд: {data.get('entrance')}\n"
         f"📞 Телефон: {data.get('phone')}\n"
         f"💳 Оплата: {data.get('payment')}"
     )
@@ -213,13 +252,13 @@ async def change_cart_callback(callback: types.CallbackQuery, state: FSMContext)
 
     if action == "plus":
         cart[product_id] = cart.get(product_id, 0) + 1
-        await callback.answer("✅ Товар добавлен в корзину.")
+        answer_text = "✅ Товар добавлен в корзину."
     elif action == "minus":
         if cart.get(product_id, 0) > 1:
             cart[product_id] -= 1
         else:
             cart.pop(product_id, None)
-        await callback.answer("Количество изменено.")
+        answer_text = "Количество изменено."
     else:
         await callback.answer()
         return
@@ -227,11 +266,10 @@ async def change_cart_callback(callback: types.CallbackQuery, state: FSMContext)
     category_id = PRODUCTS[product_id]["category"]
     await state.update_data(cart=cart, current_category=category_id)
     await callback.message.edit_text(
-        "✅ Товар добавлен в корзину.\n"
-        "Хотите заказать что-нибудь ещё?\n\n"
-        f"{CATEGORIES[category_id]}",
+        f"{answer_text}\nХотите заказать что-нибудь ещё?\n\n{CATEGORIES[category_id]}",
         reply_markup=category_keyboard(category_id, cart),
     )
+    await callback.answer(answer_text)
 
 
 @dp.callback_query(F.data == "checkout")
@@ -241,28 +279,35 @@ async def checkout_callback(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Корзина пустая.", show_alert=True)
         return
 
-    await state.set_state(OrderState.waiting_for_address)
+    await state.set_state(OrderState.address)
     await callback.message.edit_text(
         f"{cart_text(cart)}\n\n📍 Введите адрес доставки"
     )
     await callback.answer()
 
 
-@dp.message(OrderState.waiting_for_address, F.text)
+@dp.message(OrderState.address, F.text)
 async def get_address(message: types.Message, state: FSMContext):
     await state.update_data(address=message.text.strip())
-    await state.set_state(OrderState.waiting_for_phone)
+    await state.set_state(OrderState.entrance)
+    await message.answer("🏢 Укажите подъезд")
+
+
+@dp.message(OrderState.entrance, F.text)
+async def get_entrance(message: types.Message, state: FSMContext):
+    await state.update_data(entrance=message.text.strip())
+    await state.set_state(OrderState.phone)
     await message.answer("📞 Введите номер телефона")
 
 
-@dp.message(OrderState.waiting_for_phone, F.text)
+@dp.message(OrderState.phone, F.text)
 async def get_phone(message: types.Message, state: FSMContext):
     await state.update_data(phone=message.text.strip())
-    await state.set_state(OrderState.waiting_for_payment)
+    await state.set_state(OrderState.payment)
     await message.answer("💳 Выберите способ оплаты", reply_markup=payment_keyboard())
 
 
-@dp.callback_query(OrderState.waiting_for_payment, F.data.startswith("pay:"))
+@dp.callback_query(OrderState.payment, F.data.startswith("pay:"))
 async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
     payment_id = callback.data.split(":", maxsplit=1)[1]
     if payment_id not in PAYMENTS:
@@ -270,10 +315,89 @@ async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(payment=PAYMENTS[payment_id])
+
+    if payment_id == "cash":
+        await callback.message.edit_text(
+            "💵 Оплата наличными при получении заказа.\n\n"
+            "✅ Заказ принят.\n"
+            "🚚 Ожидайте заказ, курьер свяжется с вами."
+        )
+        await callback.answer()
+        await state.clear()
+        return
+
+    await state.set_state(OrderState.paid_confirmation)
+    if payment_id == "dc":
+        text = f"💳 Оплатите на номер Душанбе Сити:\n{DUSHANBE_CITY_PHONE}"
+    else:
+        text = f"💳 Оплатите на номер Alif:\n{ALIF_PHONE}"
+
+    await callback.message.edit_text(text, reply_markup=paid_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(OrderState.paid_confirmation, F.data == "paid")
+async def paid_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(OrderState.check_upload)
+    await callback.message.edit_text("📸 Отправьте чек пожалуйста")
+    await callback.answer()
+
+
+@dp.message(OrderState.check_upload, F.photo)
+async def check_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    await callback.message.edit_text(order_summary(data))
-    await callback.answer("Заказ оформлен.")
+    user = message.from_user
+    username = f"@{user.username}" if user and user.username else "без username"
+    full_name = user.full_name if user else "не указан"
+    check_id = uuid4().hex[:12]
+    caption = (
+        "🧾 Новый чек на проверку\n\n"
+        f"{order_summary(data)}\n\n"
+        f"Клиент: {full_name} ({username})"
+    )
+
+    await bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=message.photo[-1].file_id,
+        caption=caption,
+        reply_markup=admin_check_keyboard(check_id),
+    )
+
+    pending_checks[check_id] = {
+        "client_chat_id": message.chat.id,
+    }
+
+    await message.answer("✅ Чек отправлен на проверку.")
     await state.clear()
+
+
+@dp.message(OrderState.check_upload)
+async def wrong_check(message: types.Message):
+    await message.answer("Пожалуйста, отправьте чек фотографией.")
+
+
+@dp.callback_query(F.data.startswith("check:"))
+async def admin_check_callback(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Эти кнопки доступны только администратору.", show_alert=True)
+        return
+
+    _, action, check_id = callback.data.split(":", maxsplit=2)
+    check = pending_checks.pop(check_id, None)
+    if not check:
+        await callback.answer("Чек уже обработан.", show_alert=True)
+        return
+
+    if action == "valid":
+        client_text = "✅ Заказ принят.\n🚚 Ожидайте заказ, курьер свяжется с вами."
+        admin_answer = "Чек подтвержден."
+    else:
+        client_text = "❌ Чек не действителен.\nЗаказ не принят."
+        admin_answer = "Чек отклонен."
+
+    await bot.send_message(chat_id=check["client_chat_id"], text=client_text)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer(admin_answer)
 
 
 @dp.callback_query(F.data == "noop")
@@ -289,7 +413,7 @@ async def unknown_message(message: types.Message, state: FSMContext):
 
 @dp.callback_query()
 async def unknown_callback(callback: types.CallbackQuery):
-    await callback.answer("Кнопка уже не активна.", show_alert=True)
+    await callback.answer("Нажмите /start, чтобы начать новый заказ.", show_alert=True)
 
 
 async def main():
