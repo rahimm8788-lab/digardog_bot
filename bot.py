@@ -79,9 +79,9 @@ PRODUCTS = {
 }
 
 PAYMENTS = {
-    "cash": "💵 Наличными",
-    "dc": "🏦 Душанбе Сити",
-    "alif": "🟣 Alif",
+    "cash": "Наличными",
+    "dc": "Душанбе Сити",
+    "alif": "Alif",
 }
 
 
@@ -99,7 +99,6 @@ def category_keyboard(category_id: str, cart: dict) -> InlineKeyboardMarkup:
     for product_id, product in PRODUCTS.items():
         if product["category"] != category_id:
             continue
-
         quantity = cart.get(product_id, 0)
         rows.append(
             [
@@ -116,7 +115,6 @@ def category_keyboard(category_id: str, cart: dict) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="➕", callback_data=f"cart:plus:{product_id}"),
             ]
         )
-
     rows.append([InlineKeyboardButton(text="⬅️ Категории", callback_data="menu")])
     rows.append([InlineKeyboardButton(text="🛒 Оформить заказ", callback_data="checkout")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -125,9 +123,9 @@ def category_keyboard(category_id: str, cart: dict) -> InlineKeyboardMarkup:
 def payment_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💵 Наличными", callback_data="pay:cash")],
-            [InlineKeyboardButton(text="🏦 Душанбе Сити", callback_data="pay:dc")],
-            [InlineKeyboardButton(text="🟣 Alif", callback_data="pay:alif")],
+            [InlineKeyboardButton(text="Наличными", callback_data="pay:cash")],
+            [InlineKeyboardButton(text="Душанбе Сити", callback_data="pay:dc")],
+            [InlineKeyboardButton(text="Alif", callback_data="pay:alif")],
         ]
     )
 
@@ -194,6 +192,17 @@ async def ensure_cart(state: FSMContext) -> dict:
         cart = {}
         await state.update_data(cart=cart)
     return cart
+
+
+async def send_order_to_admin(data: dict, user: types.User | None, title: str):
+    username = f"@{user.username}" if user and user.username else "без username"
+    full_name = user.full_name if user else "не указан"
+    text = (
+        f"{title}\n\n"
+        f"{order_summary(data)}\n\n"
+        f"Клиент: {full_name} ({username})"
+    )
+    await bot.send_message(chat_id=ADMIN_ID, text=text)
 
 
 async def show_main_menu(message: types.Message, state: FSMContext):
@@ -306,9 +315,16 @@ async def get_entrance(message: types.Message, state: FSMContext):
 
 @dp.message(OrderState.phone, F.text)
 async def get_phone(message: types.Message, state: FSMContext):
-    await state.update_data(phone=message.text.strip())
+    phone = message.text.strip()
+    await state.update_data(phone=phone)
     await state.set_state(OrderState.payment)
-    await message.answer("💳 Выберите способ оплаты", reply_markup=payment_keyboard())
+    await message.answer(
+        "💳 Выберите способ оплаты:\n\n"
+        "1. Наличными\n"
+        "2. Душанбе Сити\n"
+        "3. Alif",
+        reply_markup=payment_keyboard(),
+    )
 
 
 @dp.callback_query(OrderState.payment, F.data.startswith("pay:"))
@@ -319,10 +335,12 @@ async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(payment=PAYMENTS[payment_id])
+    data = await state.get_data()
 
     if payment_id == "cash":
+        await send_order_to_admin(data, callback.from_user, "💵 Новый заказ с оплатой наличными")
         await callback.message.edit_text(
-            "💵 Оплата наличными при получении заказа.\n\n"
+            "Оплата наличными при получении заказа.\n\n"
             "✅ Заказ принят.\n"
             "🚚 Ожидайте заказ, курьер свяжется с вами."
         )
@@ -343,7 +361,7 @@ async def payment_callback(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(OrderState.paid_confirmation, F.data == "paid")
 async def paid_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.check_upload)
-    await callback.message.edit_text("📸 Отправьте чек пожалуйста")
+    await callback.message.edit_text("📸 Отправьте чек оплаты.")
     await callback.answer()
 
 
@@ -393,10 +411,10 @@ async def admin_check_callback(callback: types.CallbackQuery):
         return
 
     if action == "valid":
-        client_text = "✅ Заказ принят.\n🚚 Ожидайте заказ, курьер свяжется с вами."
+        client_text = "✅ Заказ принят. Курьер скоро свяжется с вами."
         admin_answer = "Чек подтвержден."
     else:
-        client_text = "❌ Чек не действителен.\nЗаказ не принят."
+        client_text = "❌ Чек недействителен. Заказ отменён."
         admin_answer = "Чек отклонен."
 
     await bot.send_message(chat_id=check["client_chat_id"], text=client_text)
