@@ -33,7 +33,7 @@ class OrderState(StatesGroup):
     phone = State()
     payment = State()
     paid_confirmation = State()
-    waiting_check = State()
+    WAITING_FOR_RECEIPT = State()
 
 
 CATEGORIES = {
@@ -482,7 +482,7 @@ async def paid_callback(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    await state.set_state(OrderState.waiting_check)
+    await state.set_state(OrderState.WAITING_FOR_RECEIPT)
     await callback.message.edit_text("📸 Отправьте чек оплаты")
     await callback.answer()
 
@@ -492,7 +492,7 @@ async def wrong_paid_confirmation(message: types.Message):
     await message.answer("Нажмите кнопку ✅ Оплатил после оплаты.")
 
 
-@dp.message(OrderState.waiting_check, F.photo)
+@dp.message(OrderState.WAITING_FOR_RECEIPT, F.photo)
 async def check_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     check_id = uuid4().hex[:12]
@@ -518,11 +518,11 @@ async def check_photo(message: types.Message, state: FSMContext):
         "file_id": file_id,
     }
 
-    await message.answer("✅ Чек отправлен на проверку администратору")
+    await message.answer("⏳ Чек отправлен на проверку администратору")
     await state.clear()
 
 
-@dp.message(OrderState.waiting_check)
+@dp.message(OrderState.WAITING_FOR_RECEIPT)
 async def wrong_check(message: types.Message):
     await message.answer("📸 Отправьте чек фотографией.")
 
