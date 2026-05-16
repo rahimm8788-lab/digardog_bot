@@ -32,7 +32,7 @@ class OrderState(StatesGroup):
     phone = State()
     payment = State()
     paid_confirmation = State()
-    check_upload = State()
+    WAITING_CHECK = State()
 
 
 CATEGORIES = {
@@ -472,7 +472,7 @@ async def paid_callback(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    await state.set_state(OrderState.check_upload)
+    await state.set_state(OrderState.WAITING_CHECK)
     await callback.message.edit_text("📸 Отправьте чек")
     await callback.answer()
 
@@ -482,10 +482,11 @@ async def wrong_paid_confirmation(message: types.Message):
     await message.answer("Нажмите кнопку ✅ Оплатил после оплаты.")
 
 
-@dp.message(OrderState.check_upload, F.photo)
+@dp.message(OrderState.WAITING_CHECK, F.photo)
 async def check_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     check_id = uuid4().hex[:12]
+    file_id = message.photo[-1].file_id
     user = message.from_user
     username = f"@{user.username}" if user and user.username else "без username"
     full_name = user.full_name if user else "не указан"
@@ -497,17 +498,20 @@ async def check_photo(message: types.Message, state: FSMContext):
 
     await bot.send_photo(
         chat_id=ADMIN_ID,
-        photo=message.photo[-1].file_id,
+        photo=file_id,
         caption=caption,
         reply_markup=admin_check_keyboard(check_id),
     )
-    pending_checks[check_id] = {"client_chat_id": message.chat.id}
+    pending_checks[check_id] = {
+        "client_chat_id": message.chat.id,
+        "file_id": file_id,
+    }
 
-    await message.answer("✅ Чек отправлен на проверку")
+    await message.answer("✅ Чек отправлен на проверку администратору")
     await state.clear()
 
 
-@dp.message(OrderState.check_upload)
+@dp.message(OrderState.WAITING_CHECK)
 async def wrong_check(message: types.Message):
     await message.answer("📸 Отправьте чек фотографией.")
 
