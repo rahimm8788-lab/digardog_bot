@@ -158,7 +158,7 @@ def admin_check_keyboard(check_id: str) -> InlineKeyboardMarkup:
 
 
 def cart_total(cart: dict) -> int:
-    return sum(PRODUCTS[product_id]["price"] * quantity for product_id, quantity in cart.items())
+    return sum(PRODUCTS[product_id]["price"] * int(quantity) for product_id, quantity in cart.items())
 
 
 def cart_text(cart: dict) -> str:
@@ -173,6 +173,18 @@ def cart_text(cart: dict) -> str:
         )
     lines.append(f"\nИтого: {cart_total(cart)} сомони")
     return "\n".join(lines)
+
+
+def category_text(category_id: str, cart: dict, notice: str | None = None) -> str:
+    parts = []
+    if notice:
+        parts.append(notice)
+        parts.append("Хотите заказать что-нибудь ещё?")
+
+    parts.append(CATEGORIES[category_id])
+    parts.append("Выберите количество товара:")
+    parts.append(f"Итого в корзине: {cart_total(cart)} сомони")
+    return "\n\n".join(parts)
 
 
 def order_summary(data: dict) -> str:
@@ -191,7 +203,7 @@ async def ensure_cart(state: FSMContext) -> dict:
     if cart is None:
         cart = {}
         await state.update_data(cart=cart)
-    return cart
+    return {product_id: int(quantity) for product_id, quantity in cart.items()}
 
 
 async def send_order_to_admin(data: dict, user: types.User | None, title: str):
@@ -247,7 +259,7 @@ async def category_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.choosing)
     await state.update_data(current_category=category_id)
     await callback.message.edit_text(
-        f"{CATEGORIES[category_id]}\n\nВыберите количество товара:",
+        category_text(category_id, cart),
         reply_markup=category_keyboard(category_id, cart),
     )
     await callback.answer()
@@ -261,14 +273,18 @@ async def change_cart_callback(callback: types.CallbackQuery, state: FSMContext)
         return
 
     data = await state.get_data()
-    cart = data.get("cart", {})
+    cart = {
+        saved_product_id: int(quantity)
+        for saved_product_id, quantity in data.get("cart", {}).items()
+    }
+    current_quantity = cart.get(product_id, 0)
 
     if action == "plus":
-        cart[product_id] = cart.get(product_id, 0) + 1
+        cart[product_id] = current_quantity + 1
         answer_text = "✅ Товар добавлен в корзину."
     elif action == "minus":
-        if cart.get(product_id, 0) > 1:
-            cart[product_id] -= 1
+        if current_quantity > 1:
+            cart[product_id] = current_quantity - 1
         else:
             cart.pop(product_id, None)
         answer_text = "Количество изменено."
@@ -279,7 +295,7 @@ async def change_cart_callback(callback: types.CallbackQuery, state: FSMContext)
     category_id = PRODUCTS[product_id]["category"]
     await state.update_data(cart=cart, current_category=category_id)
     await callback.message.edit_text(
-        f"{answer_text}\nХотите заказать что-нибудь ещё?\n\n{CATEGORIES[category_id]}",
+        category_text(category_id, cart, answer_text),
         reply_markup=category_keyboard(category_id, cart),
     )
     await callback.answer(answer_text)
